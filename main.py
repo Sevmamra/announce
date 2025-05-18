@@ -29,7 +29,18 @@ GROUP_NAMES = os.getenv('GROUP_NAMES').split(',')
 
 # Global variables
 broadcast_data = {}
-selected_groups = set()
+selected_groups = set()  # Moved to top level with proper initialization
+
+def create_group_selection_keyboard():
+    """Create inline keyboard with group selection buttons."""
+    keyboard = []
+    for idx, name in enumerate(GROUP_NAMES):
+        button_text = f"{'✅ ' if idx in selected_groups else ''}{name}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"select_{idx}")])
+    
+    broadcast_button_text = "📢 Broadcast to Selected" if selected_groups else "📢 Select groups first"
+    keyboard.append([InlineKeyboardButton(broadcast_button_text, callback_data="broadcast_selected")])
+    return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message with group selection buttons."""
@@ -38,8 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Reset selections when starting fresh
-    global selected_groups
-    selected_groups = set()
+    selected_groups.clear()
     
     keyboard = create_group_selection_keyboard()
     await update.message.reply_text(
@@ -48,24 +58,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-def create_group_selection_keyboard():
-    """Create inline keyboard with group selection buttons."""
-    keyboard = []
-    for idx, name in enumerate(GROUP_NAMES):
-        # Add checkmark if group is selected
-        button_text = f"{'✅ ' if idx in selected_groups else ''}{name}"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"select_{idx}")])
-    
-    keyboard.append([InlineKeyboardButton(
-        "📢 Broadcast to Selected Groups" if selected_groups else "📢 Select groups first",
-        callback_data="broadcast_selected"
-    )])
-    return InlineKeyboardMarkup(keyboard)
-
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Initiate broadcast process."""
     if update.effective_user.id != YOUR_USER_ID:
         await update.message.reply_text("⛔ Unauthorized access!")
+        return
+
+    if not selected_groups:
+        await update.message.reply_text("❗ Please select groups first using /start")
         return
 
     await update.message.reply_text(
@@ -106,11 +106,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Unsupported media type")
         return
 
-    # Show group selection
+    # Show confirmation with selected groups
     keyboard = create_group_selection_keyboard()
     await update.message.reply_text(
         "✅ Content received!\n"
-        "Select destination groups (click to toggle selection):",
+        f"Selected groups: {len(selected_groups)}\n"
+        "Click to modify selection or broadcast:",
         reply_markup=keyboard
     )
     broadcast_data['awaiting_content'] = False
@@ -144,7 +145,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         await query.edit_message_text("✍️ Please send your message now using /broadcast command")
-        broadcast_data['awaiting_content'] = True
 
 async def send_broadcast(context: ContextTypes.DEFAULT_TYPE):
     """Send the broadcast to selected groups."""
@@ -191,10 +191,6 @@ async def send_broadcast(context: ContextTypes.DEFAULT_TYPE):
             success_count += 1
         except Exception as e:
             logger.error(f"Error sending to {group_name} ({group_id}): {e}")
-    
-    # Reset after broadcast
-    global selected_groups
-    selected_groups = set()
     
     return success_count
 

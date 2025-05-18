@@ -3,11 +3,7 @@ import logging
 from telegram import (
     Update,
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaPhoto,
-    InputMediaVideo,
-    InputMediaDocument,
-    InputMediaAnimation
+    InlineKeyboardMarkup
 )
 from telegram.ext import (
     Application,
@@ -31,8 +27,9 @@ YOUR_USER_ID = int(os.getenv('YOUR_USER_ID'))
 GROUP_IDS = [int(id.strip()) for id in os.getenv('GROUP_IDS').split(',')]
 GROUP_NAMES = os.getenv('GROUP_NAMES').split(',')
 
-# Global variable to store broadcast content
+# Global variables
 broadcast_data = {}
+selected_groups = set()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message with group selection buttons."""
@@ -40,19 +37,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Unauthorized access!")
         return
 
-    keyboard = [
-        [InlineKeyboardButton(name, callback_data=f"group_{idx}")]
-        for idx, name in enumerate(GROUP_NAMES)
-    ]
-    keyboard.append([InlineKeyboardButton("📢 Broadcast to All", callback_data="broadcast_all")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Reset selections when starting fresh
+    global selected_groups
+    selected_groups = set()
     
+    keyboard = create_group_selection_keyboard()
     await update.message.reply_text(
         "👋 Welcome to Broadcast Bot!\n"
         "📌 Select groups to send message:",
-        reply_markup=reply_markup
+        reply_markup=keyboard
     )
+
+def create_group_selection_keyboard():
+    """Create inline keyboard with group selection buttons."""
+    keyboard = []
+    for idx, name in enumerate(GROUP_NAMES):
+        # Add checkmark if group is selected
+        button_text = f"{'✅ ' if idx in selected_groups else ''}{name}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"select_{idx}")])
+    
+    keyboard.append([InlineKeyboardButton(
+        "📢 Broadcast to Selected Groups" if selected_groups else "📢 Select groups first",
+        callback_data="broadcast_selected"
+    )])
+    return InlineKeyboardMarkup(keyboard)
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Initiate broadcast process."""
@@ -99,16 +107,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Show group selection
-    keyboard = [
-        [InlineKeyboardButton(name, callback_data=f"group_{idx}")]
-        for idx, name in enumerate(GROUP_NAMES)
-    ]
-    keyboard.append([InlineKeyboardButton("📢 Broadcast to All", callback_data="broadcast_all")])
-
+    keyboard = create_group_selection_keyboard()
     await update.message.reply_text(
         "✅ Content received!\n"
-        "Select destination groups:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "Select destination groups (click to toggle selection):",
+        reply_markup=keyboard
     )
     broadcast_data['awaiting_content'] = False
 
@@ -121,58 +124,79 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⛔ Unauthorized access!")
         return
 
-    if query.data.startswith("group_"):
+    if query.data.startswith("select_"):
+        # Toggle group selection
         group_idx = int(query.data.split("_")[1])
-        await send_to_group(GROUP_IDS[group_idx], context)
-        await query.edit_message_text(f"✅ Sent to {GROUP_NAMES[group_idx]}!")
-    elif query.data == "broadcast_all":
-        success_count = 0
-        for group_id in GROUP_IDS:
-            if await send_to_group(group_id, context):
-                success_count += 1
-        await query.edit_message_text(f"📢 Broadcast complete! Sent to {success_count}/{len(GROUP_IDS)} groups")
+        if group_idx in selected_groups:
+            selected_groups.remove(group_idx)
+        else:
+            selected_groups.add(group_idx)
+        
+        # Update the message with new selections
+        keyboard = create_group_selection_keyboard()
+        await query.edit_message_text(
+            text=query.message.text,
+            reply_markup=keyboard
+        )
+    elif query.data == "broadcast_selected":
+        if not selected_groups:
+            await query.answer("❗ Please select at least one group first!", show_alert=True)
+            return
+        
+        await query.edit_message_text("✍️ Please send your message now using /broadcast command")
+        broadcast_data['awaiting_content'] = True
 
-async def send_to_group(group_id, context):
-    """Send stored content to specified group."""
-    try:
-        if broadcast_data['content_type'] == 'text':
-            await context.bot.send_message(
-                chat_id=group_id,
-                text=broadcast_data['content']
-            )
-        elif broadcast_data['content_type'] == 'photo':
-            await context.bot.send_photo(
-                chat_id=group_id,
-                photo=broadcast_data['content'],
-                caption=broadcast_data.get('caption')
-            )
-        elif broadcast_data['content_type'] == 'video':
-            await context.bot.send_video(
-                chat_id=group_id,
-                video=broadcast_data['content'],
-                caption=broadcast_data.get('caption')
-            )
-        elif broadcast_data['content_type'] == 'document':
-            await context.bot.send_document(
-                chat_id=group_id,
-                document=broadcast_data['content'],
-                caption=broadcast_data.get('caption')
-            )
-        elif broadcast_data['content_type'] == 'sticker':
-            await context.bot.send_sticker(
-                chat_id=group_id,
-                sticker=broadcast_data['content']
-            )
-        elif broadcast_data['content_type'] == 'animation':
-            await context.bot.send_animation(
-                chat_id=group_id,
-                animation=broadcast_data['content'],
-                caption=broadcast_data.get('caption')
-            )
-        return True
-    except Exception as e:
-        logger.error(f"Error sending to group {group_id}: {e}")
-        return False
+async def send_broadcast(context: ContextTypes.DEFAULT_TYPE):
+    """Send the broadcast to selected groups."""
+    success_count = 0
+    for group_idx in selected_groups:
+        group_id = GROUP_IDS[group_idx]
+        group_name = GROUP_NAMES[group_idx]
+        
+        try:
+            if broadcast_data['content_type'] == 'text':
+                await context.bot.send_message(
+                    chat_id=group_id,
+                    text=broadcast_data['content']
+                )
+            elif broadcast_data['content_type'] == 'photo':
+                await context.bot.send_photo(
+                    chat_id=group_id,
+                    photo=broadcast_data['content'],
+                    caption=broadcast_data.get('caption')
+                )
+            elif broadcast_data['content_type'] == 'video':
+                await context.bot.send_video(
+                    chat_id=group_id,
+                    video=broadcast_data['content'],
+                    caption=broadcast_data.get('caption')
+                )
+            elif broadcast_data['content_type'] == 'document':
+                await context.bot.send_document(
+                    chat_id=group_id,
+                    document=broadcast_data['content'],
+                    caption=broadcast_data.get('caption')
+                )
+            elif broadcast_data['content_type'] == 'sticker':
+                await context.bot.send_sticker(
+                    chat_id=group_id,
+                    sticker=broadcast_data['content']
+                )
+            elif broadcast_data['content_type'] == 'animation':
+                await context.bot.send_animation(
+                    chat_id=group_id,
+                    animation=broadcast_data['content'],
+                    caption=broadcast_data.get('caption')
+                )
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Error sending to {group_name} ({group_id}): {e}")
+    
+    # Reset after broadcast
+    global selected_groups
+    selected_groups = set()
+    
+    return success_count
 
 def main():
     """Start the bot."""
@@ -188,7 +212,7 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('broadcast', broadcast_command))
-    application.add_handler(MessageHandler(filters.ALL, handle_message))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_handler))
 
     # Start the bot
